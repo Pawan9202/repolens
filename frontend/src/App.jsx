@@ -85,7 +85,7 @@ export default function App() {
     setData(null);
 
     try {
-      const res = await axios.get(`http://localhost:5000/analyze?repo=${repo}`);
+      const res = await axios.get(`https://repolens-j3j0.onrender.com/analyze?repo=${repo}`);
       setData(res.data);
       
       setHistory((prev) => {
