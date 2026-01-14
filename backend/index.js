@@ -235,6 +235,74 @@ app.get("/analyze", async (req, res) => {
   }
 });
 
+/* ---------------- PROFILE ---------------- */
+app.get("/profile", async (req, res) => {
+  const username = req.query.user;
+
+  if (!username) {
+    return res.status(400).json({ error: "Username required" });
+  }
+
+  try {
+    const headers = process.env.GITHUB_TOKEN
+      ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` }
+      : {};
+
+    const { data: user } = await axios.get(
+      `https://api.github.com/users/${username}`,
+      { headers }
+    );
+
+    const { data: repos } = await axios.get(
+      `https://api.github.com/users/${username}/repos?per_page=100`,
+      { headers }
+    );
+
+    const totalStars = repos.reduce(
+      (sum, repo) => sum + repo.stargazers_count,
+      0
+    );
+
+    const languageCount = {};
+    repos.forEach((repo) => {
+      if (repo.language) {
+        languageCount[repo.language] =
+          (languageCount[repo.language] || 0) + 1;
+      }
+    });
+
+    const topLanguages = Object.entries(languageCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    const topRepo = repos.sort(
+      (a, b) => b.stargazers_count - a.stargazers_count
+    )[0];
+
+    res.json({
+      username: user.login,
+      avatar: user.avatar_url,
+      followers: user.followers,
+      following: user.following,
+      public_repos: user.public_repos,
+      total_stars: totalStars,
+      created_at: user.created_at,
+      top_languages: topLanguages,
+      best_repo: topRepo
+        ? {
+            name: topRepo.name,
+            stars: topRepo.stargazers_count,
+            url: topRepo.html_url,
+          }
+        : null,
+    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ error: "Failed to fetch profile" });
+  }
+});
+
+
 /* ---------------- ROOT ---------------- */
 
 app.get("/", (req, res) => {
