@@ -15,7 +15,8 @@ import {
   History as HistoryIcon,
   Lightbulb,
   LayoutTemplate,
-  Loader2 // Added loader icon
+  Loader2,
+  User, // Added User icon
 } from "lucide-react";
 
 import {
@@ -43,7 +44,7 @@ ChartJS.register(
 const commonOptions = {
   responsive: true,
   animation: {
-    duration: 1000, // Ensure animation doesn't break PDF capture if captured late
+    duration: 1000,
   },
   plugins: {
     legend: { display: false },
@@ -61,7 +62,7 @@ const commonOptions = {
 };
 
 export default function App() {
-  const [mode, setMode] = useState("analyze");
+  const [mode, setMode] = useState("analyze"); // analyze | compare | profile
 
   const [repo, setRepo] = useState("https://github.com/vercel/next.js");
   const [repo1, setRepo1] = useState("https://github.com/vercel/next.js");
@@ -71,10 +72,13 @@ export default function App() {
   const [data1, setData1] = useState(null);
   const [data2, setData2] = useState(null);
 
-  const [history, setHistory] = useState([]);
+  // --- NEW: Profile State ---
+  const [profileUser, setProfileUser] = useState("");
+  const [profileData, setProfileData] = useState(null);
 
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [isExporting, setIsExporting] = useState(false); // New state for PDF loading
+  const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState("");
 
   const reportRef = useRef(null);
@@ -85,15 +89,16 @@ export default function App() {
     setData(null);
 
     try {
-      const res = await axios.get(`https://repolens-j3j0.onrender.com/analyze?repo=${repo}`);
+      const res = await axios.get(
+        `https://repolens-j3j0.onrender.com/analyze?repo=${repo}`
+      );
       setData(res.data);
-      
+
       setHistory((prev) => {
-        const newHistory = [repo, ...prev.filter(item => item !== repo)];
+        const newHistory = [repo, ...prev.filter((item) => item !== repo)];
         return newHistory.slice(0, 5);
       });
-
-    } catch{
+    } catch {
       setError("Unable to fetch repository data. Please check the URL.");
     }
 
@@ -114,12 +119,11 @@ export default function App() {
 
       setData1(res1.data);
       setData2(res2.data);
-      
+
       setHistory((prev) => {
         const unique = new Set([repo1, repo2, ...prev]);
         return Array.from(unique).slice(0, 5);
       });
-
     } catch {
       setError("Comparison failed. Check both URLs.");
     }
@@ -127,26 +131,45 @@ export default function App() {
     setLoading(false);
   };
 
-  // --- FIXED PDF EXPORT FUNCTION ---
+  // --- NEW: Fetch Profile Function ---
+  const fetchProfile = async () => {
+    if (!profileUser) return;
+
+    setLoading(true);
+    setError("");
+    setProfileData(null);
+
+    try {
+      // Assuming same backend URL structure
+      const res = await axios.get(
+        `https://repolens-j3j0.onrender.com/profile?user=${profileUser}`
+      );
+      setProfileData(res.data);
+    } catch {
+      setError("Failed to fetch profile. Check username.");
+    }
+
+    setLoading(false);
+  };
+
   const exportPDF = async () => {
     if (!reportRef.current) {
       console.error("Report reference not found");
       return;
     }
 
-    setIsExporting(true); // Start loading state
+    setIsExporting(true);
 
     try {
-      // Small delay to ensure any re-renders or animations are settled
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       const canvas = await html2canvas(reportRef.current, {
-        scale: 2, // Higher quality
-        useCORS: true, // Handle external images
+        scale: 2,
+        useCORS: true,
         logging: false,
         backgroundColor: "#ffffff",
         windowWidth: reportRef.current.scrollWidth,
-        windowHeight: reportRef.current.scrollHeight
+        windowHeight: reportRef.current.scrollHeight,
       });
 
       const imgData = canvas.toDataURL("image/png");
@@ -154,18 +177,16 @@ export default function App() {
 
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
-      
+
       const imgProps = pdf.getImageProperties(imgData);
       const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
 
-      // Logic to handle if content is taller than 1 page
       let heightLeft = imgHeight;
       let position = 0;
 
       pdf.addImage(imgData, "PNG", 0, position, pdfWidth, imgHeight);
       heightLeft -= pdfHeight;
 
-      // If content is longer than one page, add new pages
       while (heightLeft >= 0) {
         position = heightLeft - imgHeight;
         pdf.addPage();
@@ -179,7 +200,7 @@ export default function App() {
       alert("Could not generate PDF. Please try again.");
     }
 
-    setIsExporting(false); // End loading state
+    setIsExporting(false);
   };
 
   return (
@@ -206,24 +227,39 @@ export default function App() {
             >
               Compare
             </NavTab>
+            {/* NEW: Profile Tab */}
+            <NavTab
+              active={mode === "profile"}
+              onClick={() => setMode("profile")}
+            >
+              Profile
+            </NavTab>
           </div>
         </div>
       </nav>
 
       <main className="max-w-7xl mx-auto p-6 space-y-8 flex-grow w-full">
-        {/* Hero / Input Section */}
+        {/* Header Section */}
         <section className="max-w-3xl mx-auto text-center space-y-6 mt-8">
           <h1 className="text-4xl font-extrabold tracking-tight text-slate-900">
             {mode === "analyze"
               ? "Audit your Codebase"
-              : "Compare Architectures"}
+              : mode === "compare"
+              ? "Compare Architectures"
+              : "GitHub Profile Insights"}
           </h1>
           <p className="text-slate-500 text-lg">
-            AI-powered insights into code quality, structure, and maintainability.
+            {mode === "profile" 
+              ? "Analyze developer stats, top languages, and best repositories."
+              : "AI-powered insights into code quality, structure, and maintainability."
+            }
           </p>
 
+          {/* INPUTS AREA */}
           <div className="bg-white p-2 rounded-2xl shadow-xl shadow-indigo-100 border border-slate-200 flex flex-col md:flex-row gap-2">
-            {mode === "analyze" ? (
+            
+            {/* ANALYZE MODE INPUT */}
+            {mode === "analyze" && (
               <InputGroup
                 icon={<Search className="w-5 h-5 text-slate-400" />}
                 value={repo}
@@ -231,7 +267,10 @@ export default function App() {
                 placeholder="https://github.com/username/repo"
                 onEnter={analyzeRepo}
               />
-            ) : (
+            )}
+
+            {/* COMPARE MODE INPUTS */}
+            {mode === "compare" && (
               <>
                 <InputGroup
                   value={repo1}
@@ -248,24 +287,47 @@ export default function App() {
                 />
               </>
             )}
+
+            {/* NEW: PROFILE MODE INPUT */}
+            {mode === "profile" && (
+              <InputGroup
+                icon={<User className="w-5 h-5 text-slate-400" />}
+                value={profileUser}
+                onChange={setProfileUser}
+                placeholder="Enter GitHub username (e.g. torvalds)"
+                onEnter={fetchProfile}
+              />
+            )}
+
+            {/* ACTION BUTTON */}
             <button
-              onClick={mode === "analyze" ? analyzeRepo : compareRepos}
+              onClick={
+                mode === "analyze"
+                  ? analyzeRepo
+                  : mode === "compare"
+                  ? compareRepos
+                  : fetchProfile
+              }
               disabled={loading}
               className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-medium transition-all active:scale-95 disabled:opacity-70 disabled:scale-100 flex items-center justify-center gap-2"
             >
-              {loading
-                ? "Scanning..."
-                : mode === "analyze"
-                ? "Analyze"
-                : "Compare"}
+              {loading ? (
+                "Processing..."
+              ) : mode === "analyze" ? (
+                "Analyze"
+              ) : mode === "compare" ? (
+                "Compare"
+              ) : (
+                "Get Profile"
+              )}
               {!loading && <ArrowRight size={18} />}
             </button>
           </div>
 
-          {/* History Panel */}
+          {/* History Panel (Only for Analyze mode) */}
           {history.length > 0 && mode === "analyze" && (
             <div className="flex justify-center mt-2">
-               <History items={history} onSelect={setRepo} />
+              <History items={history} onSelect={setRepo} />
             </div>
           )}
 
@@ -278,10 +340,12 @@ export default function App() {
 
         {/* Results Section */}
         {loading && <LoadingSkeleton />}
-        
-        {!loading && !data && !data1 && mode === "analyze" && <EmptyState />}
 
-        {/* ANALYZE RESULT */}
+        {!loading && !data && !data1 && !profileData && mode === "analyze" && (
+          <EmptyState />
+        )}
+
+        {/* --- ANALYZE RESULT --- */}
         {mode === "analyze" && data && !loading && (
           <div className="animate-fade-in-up">
             <div className="flex justify-end mb-4">
@@ -290,7 +354,11 @@ export default function App() {
                 disabled={isExporting}
                 className="flex items-center gap-2 text-slate-500 hover:text-indigo-600 transition-colors text-sm font-medium disabled:opacity-50"
               >
-                {isExporting ? <Loader2 className="animate-spin" size={16}/> : <Download size={16} />} 
+                {isExporting ? (
+                  <Loader2 className="animate-spin" size={16} />
+                ) : (
+                  <Download size={16} />
+                )}
                 {isExporting ? "Generating PDF..." : "Export PDF"}
               </button>
             </div>
@@ -304,7 +372,7 @@ export default function App() {
           </div>
         )}
 
-        {/* COMPARE RESULT */}
+        {/* --- COMPARE RESULT --- */}
         {mode === "compare" && data1 && data2 && !loading && (
           <div className="animate-fade-in-up">
             <div className="flex justify-end mb-4">
@@ -313,13 +381,19 @@ export default function App() {
                 disabled={isExporting}
                 className="flex items-center gap-2 text-slate-500 hover:text-indigo-600 transition-colors text-sm font-medium disabled:opacity-50"
               >
-                 {isExporting ? <Loader2 className="animate-spin" size={16}/> : <Download size={16} />} 
-                 {isExporting ? "Generating PDF..." : "Export Comparison PDF"}
+                {isExporting ? (
+                  <Loader2 className="animate-spin" size={16} />
+                ) : (
+                  <Download size={16} />
+                )}
+                {isExporting ? "Generating PDF..." : "Export Comparison PDF"}
               </button>
             </div>
 
-            <div ref={reportRef} className="grid grid-cols-1 lg:grid-cols-2 gap-6 bg-slate-50"> 
-               {/* Note: Added bg-slate-50 to container so PDF capture looks consistent */}
+            <div
+              ref={reportRef}
+              className="grid grid-cols-1 lg:grid-cols-2 gap-6 bg-slate-50"
+            >
               <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
                 <div className="mb-4 pb-4 border-b border-slate-100 flex items-center gap-2">
                   <div className="w-2 h-8 bg-indigo-500 rounded-full"></div>
@@ -337,8 +411,17 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* --- NEW: PROFILE RESULT --- */}
+        {mode === "profile" && profileData && !loading && (
+          <div className="animate-fade-in-up">
+             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200">
+               <ProfileCard data={profileData} />
+            </div>
+          </div>
+        )}
       </main>
-      
+
       <footer className="text-center text-xs text-slate-400 py-8 border-t border-slate-100 mt-8">
         Built with ❤️ by Pawan · RepoLens © {new Date().getFullYear()}
       </footer>
@@ -363,13 +446,7 @@ function NavTab({ active, children, onClick }) {
   );
 }
 
-function InputGroup({
-  icon,
-  value,
-  onChange,
-  placeholder,
-  onEnter,
-}) {
+function InputGroup({ icon, value, onChange, placeholder, onEnter }) {
   return (
     <div className="flex-1 flex items-center px-4 bg-transparent">
       {icon}
@@ -380,6 +457,85 @@ function InputGroup({
         placeholder={placeholder}
         onKeyDown={(e) => e.key === "Enter" && onEnter && onEnter()}
       />
+    </div>
+  );
+}
+
+// --- NEW: Profile Card Component ---
+function ProfileCard({ data }) {
+  // Safe check for data
+  if (!data) return null;
+
+  const langLabels = data.top_languages ? data.top_languages.map((l) => l[0]) : [];
+  const langValues = data.top_languages ? data.top_languages.map((l) => l[1]) : [];
+
+  return (
+    <div className="space-y-8">
+      <div className="flex items-center gap-6">
+        <img
+          src={data.avatar}
+          alt={data.username}
+          className="w-24 h-24 rounded-full border-4 border-slate-100 shadow-sm"
+        />
+        <div>
+          <h3 className="text-3xl font-bold text-slate-900">{data.username}</h3>
+          <p className="text-slate-500 font-medium">
+            {data.followers} followers · {data.following} following
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {/* Reusing MetricCard for consistency */}
+        <MetricCard label="Public Repos" value={data.public_repos} />
+        <MetricCard label="Total Stars" value={data.total_stars} />
+        <MetricCard 
+          label="Joined" 
+          value={data.created_at ? new Date(data.created_at).getFullYear() : "N/A"} 
+        />
+        <MetricCard 
+          label="Best Repo" 
+          value={data.best_repo?.name || "N/A"} 
+        />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="md:col-span-2 bg-slate-50 p-6 rounded-2xl border border-slate-100">
+           <h4 className="font-semibold mb-4 text-slate-700">Top Languages</h4>
+           <div className="h-64">
+              <Bar
+                data={{
+                  labels: langLabels,
+                  datasets: [
+                    {
+                      label: "Bytes",
+                      data: langValues,
+                      backgroundColor: "#6366f1",
+                      borderRadius: 6,
+                    },
+                  ],
+                }}
+                options={{
+                  responsive: true,
+                  plugins: { legend: { display: false } },
+                  scales: {
+                     x: { grid: { display: false } },
+                     y: { display: false }
+                  }
+                }}
+              />
+           </div>
+        </div>
+        
+        {/* You can add more profile details here if needed */}
+        <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100 flex flex-col justify-center items-center text-center">
+             <Lightbulb className="text-indigo-500 mb-2" size={32} />
+             <p className="text-indigo-900 font-medium">Profile Insight</p>
+             <p className="text-sm text-indigo-700 mt-2">
+               User is most active in <strong>{langLabels[0] || "Unknown"}</strong> development.
+             </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -400,7 +556,9 @@ function HealthBadge({ score }) {
   }
 
   return (
-    <span className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold border ${color}`}>
+    <span
+      className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold border ${color}`}
+    >
       {icon} {label}
     </span>
   );
@@ -430,9 +588,12 @@ function Insights({ data }) {
       </div>
       <ul className="space-y-2">
         {insights.map((insight, idx) => (
-          <li key={idx} className="flex items-start gap-2 text-sm text-slate-700">
-             <span className="mt-1.5 w-1.5 h-1.5 bg-indigo-400 rounded-full flex-shrink-0" />
-             {insight}
+          <li
+            key={idx}
+            className="flex items-start gap-2 text-sm text-slate-700"
+          >
+            <span className="mt-1.5 w-1.5 h-1.5 bg-indigo-400 rounded-full flex-shrink-0" />
+            {insight}
           </li>
         ))}
       </ul>
@@ -489,7 +650,11 @@ function RepoReport({ data, isCompact = false }) {
       : "text-red-500";
 
   const scoreBgColor =
-    data.final_score > 80 ? "#10b981" : data.final_score > 50 ? "#f59e0b" : "#ef4444";
+    data.final_score > 80
+      ? "#10b981"
+      : data.final_score > 50
+      ? "#f59e0b"
+      : "#ef4444";
 
   return (
     <div className="space-y-8">
@@ -497,12 +662,12 @@ function RepoReport({ data, isCompact = false }) {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div className="flex-1">
           <div className="flex items-center gap-3 mb-1">
-             <div className="text-xs font-bold tracking-wider text-slate-400 uppercase">
-                Repository
-             </div>
-             <HealthBadge score={data.final_score} />
+            <div className="text-xs font-bold tracking-wider text-slate-400 uppercase">
+              Repository
+            </div>
+            <HealthBadge score={data.final_score} />
           </div>
-          
+
           <h2
             className={`font-bold text-slate-900 break-all ${
               isCompact ? "text-xl" : "text-3xl"
@@ -599,24 +764,24 @@ function RepoReport({ data, isCompact = false }) {
 
         {/* NEW INSIGHTS + AI Insight */}
         <div className="md:col-span-2 flex flex-col gap-4">
-             {/* Render Insights Component */}
-             <Insights data={data} />
+          {/* Render Insights Component */}
+          <Insights data={data} />
 
-             <div className="bg-slate-900 text-slate-300 p-6 rounded-2xl relative overflow-hidden flex-grow">
-                <div className="absolute top-0 right-0 p-4 opacity-10">
-                    <Terminal size={120} />
-                </div>
-                <div className="flex items-center gap-2 mb-3 text-indigo-400">
-                    <Terminal size={18} />
-                    <span className="font-mono text-sm font-bold uppercase tracking-widest">
-                    AI Analysis
-                    </span>
-                </div>
-                <p className="relative z-10 font-light leading-relaxed text-sm md:text-base">
-                    "{data.ai_review ||
-                    "Analysis complete. The codebase structure appears standard, though specific optimizations in large files could improve maintainability."}"
-                </p>
+          <div className="bg-slate-900 text-slate-300 p-6 rounded-2xl relative overflow-hidden flex-grow">
+            <div className="absolute top-0 right-0 p-4 opacity-10">
+              <Terminal size={120} />
             </div>
+            <div className="flex items-center gap-2 mb-3 text-indigo-400">
+              <Terminal size={18} />
+              <span className="font-mono text-sm font-bold uppercase tracking-widest">
+                AI Analysis
+              </span>
+            </div>
+            <p className="relative z-10 font-light leading-relaxed text-sm md:text-base">
+              "{data.ai_review ||
+                "Analysis complete. The codebase structure appears standard, though specific optimizations in large files could improve maintainability."}"
+            </p>
+          </div>
         </div>
       </div>
     </div>
