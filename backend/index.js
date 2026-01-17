@@ -1,314 +1,203 @@
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const mongoose = require("mongoose");
+const crypto = require("crypto");
 require("dotenv").config();
 
 const app = express();
+
+// --- MIDDLEWARE ---
 app.use(cors());
 app.use(express.json());
 
-console.log("GROQ KEY:", process.env.GROQ_API_KEY?.slice(0, 8));
-console.log("GITHUB TOKEN:", process.env.GITHUB_TOKEN?.slice(0, 8));
+// --- DATABASE CONNECTION ---
+// Make sure MONGO_URI is in your .env file!
+const MONGO_URI = process.env.MONGO_URI;
 
-/* ---------------- GITHUB AUTH CLIENT ---------------- */
+if (!MONGO_URI) {
+  console.error("❌ MONGO_URI is missing in .env file");
+} else {
+  mongoose.connect(MONGO_URI)
+    .then(() => console.log("📦 Connected to MongoDB"))
+    .catch(err => console.error("❌ MongoDB Connection Error:", err));
+}
 
+// --- SCHEMA DEFINITION ---
+const ReportSchema = new mongoose.Schema({
+  reportId: { type: String, unique: true, required: true },
+  repo: String,
+  summary: Object, // Stores the full stats object (files, stars, score, etc.)
+  aiReview: String,
+  createdAt: { type: Date, default: Date.now }
+});
+
+const Report = mongoose.model("Report", ReportSchema);
+
+// --- SERVER SETUP ---
+const PORT = process.env.PORT || 5000;
+console.log(`🚀 SERVER STARTED ON PORT ${PORT}`);
+
+/* ---------------- GITHUB CLIENT ---------------- */
 const githubAPI = axios.create({
   baseURL: "https://api.github.com",
   headers: {
-    Authorization: `Bearer ${process.env.GITHUB_TOKEN}`
-  }
+    Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+    Accept: "application/vnd.github.v3+json",
+  },
 });
 
-/* ---------------- AI REVIEW (GROQ) ---------------- */
-
-async function generateAIReview(summary) {
-  try {
-    const response = await axios.post(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        model: "llama-3.1-8b-instant", // ✅ UPDATED MODEL
-        messages: [
-          {
-            role: "system",
-            content: "You are a senior software engineer giving short, practical code review feedback."
-          },
-          {
-            role: "user",
-            content: `
-Here is repository analysis:
-${JSON.stringify(summary, null, 2)}
-
-Give:
-- Strengths (2 bullets)
-- Weaknesses (2 bullets)
-- Suggestions (2 bullets)
-Short, clear, professional.
-`
-          }
-        ],
-        temperature: 0.4
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 15000
-      }
-    );
-
-    return response.data.choices[0].message.content;
-  } catch (err) {
-    console.error("AI ERROR:", err.response?.data || err.message);
-
-    // Fallback (important for production stability)
-    return `
-Strengths:
-- Repository structure looks consistent
-- Metrics indicate reasonable maintainability
-
-Weaknesses:
-- Some files may benefit from refactoring
-- Minor technical debt visible in metrics
-
-Suggestions:
-- Reduce TODOs and console logs
-- Break down large files into modules
-`.trim();
-  }
-}
-
-
 /* ---------------- HELPERS ---------------- */
-
-function extractRepoInfo(url) {
+function extractRepoInfo(input) {
+  if (!input) return null;
+  let clean = input.trim();
+  const simpleMatch = clean.match(/^([a-zA-Z0-9-_\.]+)\/([a-zA-Z0-9-_\.]+)$/);
+  if (simpleMatch) return { owner: simpleMatch[1], repo: simpleMatch[2].replace(".git", "") };
   try {
-    const parts = url.replace("https://github.com/", "").split("/");
-    return { owner: parts[0], repo: parts[1] };
-  } catch {
-    return null;
-  }
+    if (!clean.startsWith("http")) clean = "https://" + clean;
+    const urlObj = new URL(clean);
+    const parts = urlObj.pathname.split("/").filter(Boolean);
+    if (parts.length >= 2) return { owner: parts[0], repo: parts[1].replace(".git", "") };
+  } catch (e) { console.error("URL Parsing failed:", e.message); }
+  return null;
 }
 
 async function getRepoTree(owner, repo) {
-  const { data: repoData } = await githubAPI.get(`/repos/${owner}/${repo}`);
-
-  const defaultBranch = repoData.default_branch;
-
-  const { data: branchData } = await githubAPI.get(
-    `/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`
-  );
-
-  return branchData.tree;
-}
-
-function analyzeTree(tree) {
-  const files = tree.filter(item => item.type === "blob");
-
-  const jsFiles = files.filter(f =>
-    f.path.endsWith(".js") || f.path.endsWith(".ts")
-  );
-
-  const largeFiles = files.filter(f => f.size > 500 * 1024);
-
-  const badNamedFiles = files.filter(f =>
-    f.path.includes("temp") ||
-    f.path.includes("test123") ||
-    f.path.includes("asdf")
-  );
-
-  return {
-    total_files: files.length,
-    js_ts_files: jsFiles.length,
-    large_files: largeFiles.length,
-    bad_named_files: badNamedFiles.length
-  };
+  try {
+    const { data: repoData } = await githubAPI.get(`/repos/${owner}/${repo}`);
+    const { data: branchData } = await githubAPI.get(`/repos/${owner}/${repo}/git/trees/${repoData.default_branch}?recursive=1`);
+    return { tree: branchData.tree, repoData };
+  } catch (error) {
+    const err = new Error(error.response?.data?.message || error.message);
+    err.status = error.response?.status || 500;
+    throw err;
+  }
 }
 
 async function getFileContent(owner, repo, path) {
-  const url = `https://raw.githubusercontent.com/${owner}/${repo}/main/${path}`;
-  try {
-    const res = await axios.get(url);
-    return res.data;
-  } catch {
-    return null;
+  const branches = ["main", "master"];
+  for (const branch of branches) {
+    try {
+      const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+      const res = await axios.get(url, { timeout: 5000 });
+      return res.data;
+    } catch (err) { if (err.response?.status === 404) continue; break; }
   }
+  return null;
 }
 
 async function deepAnalyze(owner, repo, tree) {
-  const files = tree.filter(f =>
-    f.type === "blob" &&
-    (f.path.endsWith(".js") || f.path.endsWith(".ts"))
-  );
+  const files = tree.filter(f => f.type === "blob" && f.path.match(/\.(js|ts|jsx|tsx|py|go|java|c|cpp)$/i));
+  let longFiles = 0, todoCount = 0, consoleLogs = 0;
+  const sample = files.slice(0, 15);
 
-  let longFiles = 0;
-  let todoCount = 0;
-  let consoleLogs = 0;
-  let possibleSecrets = 0;
-
-  const sample = files.slice(0, 40);
-
-  for (let file of sample) {
+  const analyses = await Promise.all(sample.map(async (file) => {
     const content = await getFileContent(owner, repo, file.path);
-    if (!content) continue;
-
+    if (!content || typeof content !== 'string') return null;
     const lines = content.split("\n");
-
-    if (lines.length > 300) longFiles++;
-
+    let fLong = lines.length > 300 ? 1 : 0;
+    let fTodo = 0, fLogs = 0;
     lines.forEach(line => {
-      if (line.includes("TODO") || line.includes("FIXME")) todoCount++;
-      if (line.includes("console.log")) consoleLogs++;
-
-      if (
-        line.toLowerCase().includes("apikey") ||
-        line.toLowerCase().includes("secret") ||
-        line.toLowerCase().includes("token =")
-      ) {
-        possibleSecrets++;
-      }
+      if (line.toLowerCase().includes("todo")) fTodo++;
+      if (line.includes("console.log")) fLogs++;
     });
-  }
+    return { fLong, fTodo, fLogs };
+  }));
 
-  return {
-    analyzed_files: sample.length,
-    long_files: longFiles,
-    todos: todoCount,
-    console_logs: consoleLogs,
-    possible_secrets: possibleSecrets
-  };
+  analyses.forEach(r => { if(r) { longFiles += r.fLong; todoCount += r.fTodo; consoleLogs += r.fLogs; }});
+  return { analyzed_files: sample.length, long_files: longFiles, todos: todoCount, console_logs: consoleLogs };
 }
 
-/* ---------------- MAIN ENDPOINT ---------------- */
+async function generateAIReview(summary, mode) {
+  const prompt = mode === "hr" 
+    ? "Explain this code analysis to a recruiter. Is it organized? Hireable? Under 150 words."
+    : "Audit this code as a Senior Engineer. Critique architecture, quality, and debt. Under 150 words.";
+  
+  try {
+    const response = await axios.post("https://api.groq.com/openai/v1/chat/completions", {
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "system", content: prompt }, { role: "user", content: JSON.stringify(summary) }],
+      temperature: 0.5
+    }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` } });
+    return response.data.choices[0].message.content;
+  } catch (err) { return "AI Analysis Unavailable."; }
+}
 
+/* ---------------- ROUTES ---------------- */
+
+// 1. Analyze Route (Creates & Saves Report)
 app.get("/analyze", async (req, res) => {
-  const repoUrl = req.query.repo;
-
-  if (!repoUrl) {
-    return res.status(400).json({ error: "Repo URL required" });
-  }
+  const { repo: repoUrl, mode = "dev" } = req.query;
+  if (!repoUrl) return res.status(400).json({ error: "Repo URL required" });
 
   const repoInfo = extractRepoInfo(repoUrl);
-  if (!repoInfo) {
-    return res.status(400).json({ error: "Invalid GitHub URL" });
-  }
+  if (!repoInfo) return res.status(400).json({ error: "Invalid URL" });
 
   try {
-    const { owner, repo } = repoInfo;
-
-    const { data: repoData } = await githubAPI.get(`/repos/${owner}/${repo}`);
-
-    const tree = await getRepoTree(owner, repo);
-    const basic = analyzeTree(tree);
-    const deep = await deepAnalyze(owner, repo, tree);
-
-    let score = 100;
-    score -= deep.long_files * 2;
-    score -= deep.todos;
-    score -= deep.console_logs;
-    score -= deep.possible_secrets * 10;
+    // Optional: Check if report recently created to save API calls
+    // const existing = await Report.findOne({ repo: `${repoInfo.owner}/${repoInfo.repo}` }).sort({ createdAt: -1 });
+    
+    const { tree, repoData } = await getRepoTree(repoInfo.owner, repoInfo.repo);
+    const deepStats = await deepAnalyze(repoInfo.owner, repoInfo.repo, tree);
+    
+    let score = 100 - (deepStats.long_files * 3) - deepStats.todos - (deepStats.console_logs * 2);
     if (score < 0) score = 0;
 
     const summary = {
       repo: repoData.full_name,
       stars: repoData.stargazers_count,
-      forks: repoData.forks_count,
-      language: repoData.language,
-      ...basic,
-      ...deep,
+      language: repoData.language || "Mixed",
+      total_files: tree.length,
+      ...deepStats,
       final_score: score
     };
 
-    const aiReview = await generateAIReview(summary);
-
-    res.json({
-      ...summary,
-      ai_review: aiReview
+    const aiReview = await generateAIReview(summary, mode);
+    
+    // Save to MongoDB
+    const reportId = crypto.randomUUID().slice(0, 8); // Short ID for URL
+    await Report.create({
+      reportId,
+      repo: summary.repo,
+      summary,
+      aiReview
     });
+
+    res.json({ ...summary, aiReview, reportId });
 
   } catch (err) {
-    console.error("ANALYZE ERROR:", err.response?.data || err.message);
-    res.status(500).json({
-      error: "Analysis failed",
-      details: err.response?.data || err.message
-    });
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message || "Analysis failed" });
   }
 });
 
-/* ---------------- PROFILE ---------------- */
+// 2. Get Report Route (For Shareable Links)
+app.get("/reports/:id", async (req, res) => {
+  try {
+    const report = await Report.findOne({ reportId: req.params.id });
+    if (!report) return res.status(404).json({ error: "Report not found" });
+    res.json({ ...report.summary, ai_review: report.aiReview, reportId: report.reportId });
+  } catch (err) {
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
+// 3. Profile Route (Kept for compatibility)
 app.get("/profile", async (req, res) => {
   const username = req.query.user;
-
-  if (!username) {
-    return res.status(400).json({ error: "Username required" });
-  }
-
+  if (!username) return res.status(400).json({ error: "Username required" });
   try {
-    const headers = process.env.GITHUB_TOKEN
-      ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` }
-      : {};
-
-    const { data: user } = await axios.get(
-      `https://api.github.com/users/${username}`,
-      { headers }
-    );
-
-    const { data: repos } = await axios.get(
-      `https://api.github.com/users/${username}/repos?per_page=100`,
-      { headers }
-    );
-
-    const totalStars = repos.reduce(
-      (sum, repo) => sum + repo.stargazers_count,
-      0
-    );
-
-    const languageCount = {};
-    repos.forEach((repo) => {
-      if (repo.language) {
-        languageCount[repo.language] =
-          (languageCount[repo.language] || 0) + 1;
-      }
-    });
-
-    const topLanguages = Object.entries(languageCount)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
-
-    const topRepo = repos.sort(
-      (a, b) => b.stargazers_count - a.stargazers_count
-    )[0];
-
+    const { data: user } = await githubAPI.get(`/users/${username}`);
     res.json({
-      username: user.login,
-      avatar: user.avatar_url,
-      followers: user.followers,
-      following: user.following,
-      public_repos: user.public_repos,
-      total_stars: totalStars,
-      created_at: user.created_at,
-      top_languages: topLanguages,
-      best_repo: topRepo
-        ? {
-            name: topRepo.name,
-            stars: topRepo.stargazers_count,
-            url: topRepo.html_url,
-          }
-        : null,
+        username: user.login,
+        avatar: user.avatar_url,
+        public_repos: user.public_repos,
+        followers: user.followers
+        // Add more fields if needed
     });
-  } catch (err) {
-    console.error(err.response?.data || err.message);
+  } catch {
     res.status(500).json({ error: "Failed to fetch profile" });
   }
 });
 
-
-/* ---------------- ROOT ---------------- */
-
-app.get("/", (req, res) => {
-  res.send("GitHub Repo Analyzer API running");
-});
-
-app.listen(5000, () => {
-  console.log("Server running on http://localhost:5000");
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
